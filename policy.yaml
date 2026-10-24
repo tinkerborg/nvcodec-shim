@@ -1,0 +1,63 @@
+# Reference manifest; the Pulumi component in bistromath renders the same thing
+# with the image parameterised.
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: nvcodec-shim
+spec:
+  failurePolicy: Ignore
+  reinvocationPolicy: IfNeeded
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: requests-gpu
+      expression: >-
+        object.spec.containers.exists(c,
+          has(c.resources) && has(c.resources.limits) && 'nvidia.com/gpu' in c.resources.limits)
+  mutations:
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: >-
+          Object{
+            spec: Object.spec{
+              volumes: [Object.spec.volumes{
+                name: "nvcodec-shim",
+                emptyDir: Object.spec.volumes.emptyDir{}
+              }],
+              initContainers: [Object.spec.initContainers{
+                name: "nvcodec-shim",
+                image: "ghcr.io/tinkerborg/nvcodec-shim:latest",
+                volumeMounts: [Object.spec.initContainers.volumeMounts{
+                  name: "nvcodec-shim", mountPath: "/nvcodec-shim"
+                }]
+              }],
+              containers: object.spec.containers
+                .filter(c, has(c.resources) && has(c.resources.limits) && 'nvidia.com/gpu' in c.resources.limits)
+                .map(c, Object.spec.containers{
+                  name: c.name,
+                  volumeMounts: [Object.spec.containers.volumeMounts{
+                    name: "nvcodec-shim", mountPath: "/nvcodec-shim", readOnly: true
+                  }],
+                  env: [Object.spec.containers.env{
+                    name: "LD_PRELOAD", value: "/nvcodec-shim/libnvcodec-shim.so"
+                  }]
+                })
+            }
+          }
+---
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: nvcodec-shim
+spec:
+  policyName: nvcodec-shim
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: [kube-system]
